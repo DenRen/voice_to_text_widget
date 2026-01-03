@@ -279,6 +279,29 @@ class VoiceToTextApp:
     LEVEL_LOW = 4      # Quiet speech
 ```
 
+### Quick Start Alias
+
+Add to your `~/.bashrc` for easy launching from anywhere:
+
+```bash
+# Voice-to-Text widget alias
+voice-tray() {
+    local VENV_DIR="$HOME/projects/voice_to_text_widget"
+    "$VENV_DIR/venv/bin/python3" "$VENV_DIR/voice_tray.py"
+}
+```
+
+Then reload and use:
+
+```bash
+source ~/.bashrc
+voice-tray  # Launch from anywhere without activating venv
+```
+
+**Prerequisites**: Run `./setup_venv.sh` first to create the virtual environment.
+
+**Note**: This runs Python directly from the venv without activating it, keeping your terminal environment clean.
+
 ## Project Structure
 
 ```
