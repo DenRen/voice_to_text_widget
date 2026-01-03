@@ -1,6 +1,6 @@
 #!/bin/bash
 # Voice-to-Text Quick Setup Script
-# Creates virtual environment and installs all dependencies.
+# Creates virtual environment and installs all dependencies
 
 set -e  # Exit on error
 
