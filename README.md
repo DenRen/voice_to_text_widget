@@ -42,6 +42,9 @@ sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 \
 
 ```bash
 pip install groq pyaudio PyGObject-stubs
+
+# For offline / local mode (--local):
+pip install faster-whisper
 ```
 
 **Important:** Install PyGObject via apt (`python3-gi`), not pip.
@@ -62,7 +65,11 @@ echo 'export GROQ_API_KEY="your-api-key-here"' >> ~/.bashrc
 ### 1. Run the Application
 
 ```bash
+# Cloud mode (Groq API) — default, needs GROQ_API_KEY
 python3 voice_tray.py
+
+# Local mode — fully offline, nothing leaves the machine
+python3 voice_tray.py --local
 ```
 
 You'll see:
@@ -91,6 +98,25 @@ To toggle recording, send: kill -SIGUSR1 12345
 - Press `Ctrl+Shift+Space` again to stop
 - Text is copied to clipboard
 - Paste with `Ctrl+V` anywhere
+
+## Offline / Local Mode (`--local`)
+
+Pass `--local` to run **the same Whisper model Groq serves** (`large-v3-turbo`)
+directly on your CPU via [faster-whisper](https://github.com/SYSTRAN/faster-whisper).
+Audio never leaves the machine — ideal for sensitive content. No `GROQ_API_KEY` needed.
+
+```bash
+python3 voice_tray.py --local
+```
+
+- **First run** downloads the model (~1.5 GB) into the Hugging Face cache
+  (`~/.cache/huggingface`). After that it works **fully offline**.
+- The tray title shows the active mode: `🎤 Voice to Text (Local)` vs `(Groq)`.
+- Your `~/.voice_to_text/prompt.txt` is reused as Whisper's `initial_prompt`.
+- **Trade-off:** local CPU transcription takes a few seconds per phrase
+  (vs Groq's near-instant cloud inference). Quality is the same model.
+- To change the local model, edit `LOCAL_MODEL` in `voice_tray.py`
+  (e.g. `"medium"` / `"small"` for faster, lower-accuracy transcription).
 
 ## Configuration
 
@@ -323,7 +349,7 @@ Contributions welcome! Areas for improvement:
 - [ ] Language selector in tray menu
 - [ ] Auto-start setup script
 - [ ] Multiple voice profiles
-- [ ] Local Whisper model option (offline mode)
+- [x] Local Whisper model option (offline mode) — `--local`
 
 ## License
 

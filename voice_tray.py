@@ -6,6 +6,13 @@ Signal-activated voice recording with visual feedback
 sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-appindicator3-0.1 xdotool xclip portaudio19-dev
 pip install groq pyaudio PyGObject-stubs
 
+Transcription modes:
+  (default)  -> Groq cloud API           (needs GROQ_API_KEY, audio leaves the machine)
+  --local    -> local faster-whisper     (fully offline, nothing leaves the machine)
+
+For local mode also install:
+  pip install faster-whisper
+
 Send SIGUSR1 signal to toggle recording (bind to any hotkey in system settings)
 """
 
@@ -144,6 +151,9 @@ class VoiceToTextApp:
     SUCCESS_TIMEOUT = 3
     ERROR_TIMEOUT = 2
 
+    # Local model (faster-whisper) — same model Groq serves, runs offline on CPU
+    LOCAL_MODEL = "large-v3-turbo"
+
     # Default prompt for technical terms
     DEFAULT_PROMPT = (
         "Technical terms: PyAudio, PyGObject, GTK3, AppIndicator3, Groq API, "
@@ -151,11 +161,13 @@ class VoiceToTextApp:
         "SIGUSR1, transcription, audio recording"
     )
 
-    def __init__(self):
-        # Check API key
+    def __init__(self, local=False):
+        self.local_mode = local
+
+        # Check API key (only required for cloud/Groq mode)
         self.api_key = os.environ.get('GROQ_API_KEY')
-        if not self.api_key:
-            print("ERROR: GROQ_API_KEY not set")
+        if not self.local_mode and not self.api_key:
+            print("ERROR: GROQ_API_KEY not set (or run with --local for offline mode)")
             sys.exit(1)
 
         # Setup transcription log file
@@ -172,7 +184,31 @@ class VoiceToTextApp:
         print(f"[DEBUG] Transcription log: {self.log_file}")
         print(f"[DEBUG] Prompt file: {self.prompt_file}")
 
-        self.client = Groq(api_key=self.api_key)
+        if self.local_mode:
+            print(f"[DEBUG] LOCAL mode: loading faster-whisper ({self.LOCAL_MODEL}, int8 CPU)...")
+            from faster_whisper import WhisperModel
+            try:
+                # local_files_only=True => use the cached model and make ZERO network
+                # calls to Hugging Face. Truly nothing leaves the machine.
+                self.whisper_model = WhisperModel(
+                    self.LOCAL_MODEL, device="cpu", compute_type="int8",
+                    local_files_only=True,
+                )
+                print("[DEBUG] Local model loaded from cache (fully offline — no network at all)")
+            except Exception:
+                # Not cached yet -> download once (~1.5 GB), then it stays offline forever.
+                print("[DEBUG] Model not cached; downloading once (~1.5 GB) from Hugging Face...")
+                self.whisper_model = WhisperModel(
+                    self.LOCAL_MODEL, device="cpu", compute_type="int8",
+                    local_files_only=False,
+                )
+                print("[DEBUG] Local model downloaded and ready")
+            self.client = None
+        else:
+            print("[DEBUG] CLOUD mode: using Groq Whisper API")
+            self.client = Groq(api_key=self.api_key)
+            self.whisper_model = None
+
         print("[DEBUG] Creating AudioRecorder...")
         self.recorder = AudioRecorder()
 
@@ -192,7 +228,9 @@ class VoiceToTextApp:
         signal.signal(signal.SIGUSR1, self._handle_signal)
         print(f"[DEBUG] Signal handler registered for SIGUSR1 (PID: {os.getpid()})")
 
-        # Create indicator
+        # Create indicator. Same themed microphone icon for both modes — the
+        # offline marker is the 🔒 padlock shown next to the mic in the tray
+        # label (see _tray_label), so it rides along with the level animation.
         print("[DEBUG] Creating AppIndicator...")
         self.indicator = AppIndicator3.Indicator.new(
             "voice-to-text",
@@ -200,17 +238,21 @@ class VoiceToTextApp:
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS
         )
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-        # Try absolute icon path as fallback
-        self.indicator.set_icon_full("microphone-sensitivity-high", "Voice to Text")
-        # Set label to make it always visible
-        self.indicator.set_label("🎤", "🎤")
+        icon_desc = (
+            "Voice to Text (Local — offline)" if self.local_mode
+            else "Voice to Text (Groq — cloud)"
+        )
+        self.indicator.set_icon_full("microphone-sensitivity-high", icon_desc)
+        # Set label to make it always visible (built in one place).
+        self.indicator.set_label(self._tray_label(), self._tray_label())
         print("[DEBUG] AppIndicator created and activated")
 
         # Create menu
         self.menu = Gtk.Menu()
 
-        # Title item (shows app name)
-        title_item = Gtk.MenuItem(label="🎤 Voice to Text")
+        # Title item (shows app name + active transcription mode)
+        mode_label = "Local" if self.local_mode else "Groq"
+        title_item = Gtk.MenuItem(label=f"{self._tray_label()} Voice to Text ({mode_label})")
         title_item.set_sensitive(False)
         self.menu.append(title_item)
 
@@ -233,6 +275,14 @@ class VoiceToTextApp:
         print(f"To toggle recording, send: kill -SIGUSR1 {os.getpid()}")
         print("You can bind this to any hotkey in your system settings")
     
+    def _tray_label(self, level=""):
+        """Build the tray label in ONE place so the offline marker stays
+        consistent everywhere the mic is shown — including the animated
+        recording level (●●●). Local mode prepends a padlock:
+        🔒🎤 / 🔒🎤●●● ; cloud mode is plain 🎤 / 🎤●●●."""
+        lock = "🔒" if self.local_mode else ""
+        return f"{lock}🎤{level}"
+
     def update_status(self, text, icon=None):
         """Update status in menu and icon"""
         GLib.idle_add(self._do_update_status, text, icon)
@@ -243,21 +293,24 @@ class VoiceToTextApp:
         if icon:
             self.indicator.set_icon(icon)
 
-        # Update label based on status - always keep it visible
+        # Update label based on status - always keep it visible.
+        # The mic (+ 🔒 in local mode) comes from _tray_label() in ONE place,
+        # so the offline marker rides along through every animation frame.
         if "Recording" in text:
             # Extract recording indicator from text (e.g., "Recording ●●●")
             if "●●●" in text:
-                self.indicator.set_label("🎤●●●", "🎤●●●")
+                label = self._tray_label("●●●")
             elif "●●○" in text:
-                self.indicator.set_label("🎤●●○", "🎤●●○")
+                label = self._tray_label("●●○")
             elif "●○○" in text:
-                self.indicator.set_label("🎤●○○", "🎤●○○")
+                label = self._tray_label("●○○")
             else:
-                self.indicator.set_label("🎤○○○", "🎤○○○")
+                label = self._tray_label("○○○")
         elif "Processing" in text:
-            self.indicator.set_label("🎤...", "🎤...")
+            label = self._tray_label("...")
         else:
-            self.indicator.set_label("🎤", "🎤")
+            label = self._tray_label()
+        self.indicator.set_label(label, label)
 
         return False
     
@@ -332,22 +385,10 @@ class VoiceToTextApp:
             # Load custom prompt for technical terms
             custom_prompt = self._load_prompt()
 
-            with open(audio_file, "rb") as f:
-                api_params = {
-                    "file": (audio_file, f.read()),
-                    "model": "whisper-large-v3-turbo",
-                    "language": "ru",
-                    "response_format": "text",
-                    "temperature": 0.0
-                }
-
-                # Add prompt if available
-                if custom_prompt:
-                    api_params["prompt"] = custom_prompt
-
-                transcription = self.client.audio.transcriptions.create(**api_params)
-            
-            text = transcription.strip()
+            if self.local_mode:
+                text = self._transcribe_local(audio_file, custom_prompt)
+            else:
+                text = self._transcribe_groq(audio_file, custom_prompt)
 
             if text:
                 # Save to log file (permanent storage)
@@ -378,6 +419,36 @@ class VoiceToTextApp:
             except:
                 pass
     
+    def _transcribe_groq(self, audio_file, custom_prompt):
+        """Transcribe via Groq cloud Whisper API (audio leaves the machine)"""
+        with open(audio_file, "rb") as f:
+            api_params = {
+                "file": (audio_file, f.read()),
+                "model": "whisper-large-v3-turbo",
+                "language": "ru",
+                "response_format": "text",
+                "temperature": 0.0,
+            }
+            # Add prompt if available
+            if custom_prompt:
+                api_params["prompt"] = custom_prompt
+
+            transcription = self.client.audio.transcriptions.create(**api_params)
+        return transcription.strip()
+
+    def _transcribe_local(self, audio_file, custom_prompt):
+        """Transcribe locally with faster-whisper (fully offline, nothing leaves the machine)"""
+        segments, _info = self.whisper_model.transcribe(
+            audio_file,
+            language="ru",
+            initial_prompt=custom_prompt or None,
+            temperature=0.0,
+            beam_size=5,
+            vad_filter=True,
+        )
+        # segments is a generator; consuming it runs the actual transcription
+        return "".join(segment.text for segment in segments).strip()
+
     def _copy_to_clipboard(self, text):
         """Copy text to clipboard"""
         try:
@@ -444,8 +515,17 @@ def check_dependencies():
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description="Voice-to-Text system tray app")
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Run Whisper locally (offline) instead of sending audio to Groq cloud",
+    )
+    cli_args = parser.parse_args()
+
     if not check_dependencies():
         sys.exit(1)
-    
-    app = VoiceToTextApp()
+
+    app = VoiceToTextApp(local=cli_args.local)
     app.run()
