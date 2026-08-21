@@ -2,7 +2,9 @@
 
 ## Project Overview
 
-Professional voice-to-text application for Ubuntu that runs as a system tray app with signal-based activation. Records audio, transcribes it using Groq's Whisper API, and copies the result to clipboard.
+Professional voice-to-text application for Ubuntu that runs as a system tray app with signal-based activation. Records audio, transcribes it **locally** with faster-whisper (`local_asr.py`), and copies the result to clipboard.
+
+**Cloud (Groq) mode is disabled as of 2026-08-21.** Its code is intentionally kept but locked behind the module-level `CLOUD_MODE_ENABLED = False` kill-switch in `voice_tray.py`, enforced at three layers: the `--cloud` CLI flag (`parser.error`), `VoiceToTextApp.__init__(local=False)` (`sys.exit(1)`), and `_transcribe_groq()` (`RuntimeError`). `--local` is the default and is accepted as a no-op. The `groq` package is imported lazily, only inside the cloud branch. Do not re-enable cloud mode unless the user explicitly asks.
 
 **Status**: Production-ready, fully functional
 

@@ -7,12 +7,15 @@ sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-appindicator3
 pip install groq pyaudio PyGObject-stubs
 
 Transcription modes:
-  (default)  -> Groq cloud API           (needs GROQ_API_KEY, audio leaves the machine)
-  --local    -> local faster-whisper     (fully offline, nothing leaves the machine)
+  (default)  -> local faster-whisper     (fully offline, nothing leaves the machine)
                 (see local_asr.py: transcribes while you speak, so the wait after
                 "stop" stays short regardless of how long you dictated)
+  --cloud    -> Groq cloud API           (needs GROQ_API_KEY, audio leaves the machine)
+                DISABLED: the cloud code is kept but locked behind the
+                CLOUD_MODE_ENABLED kill-switch below. --local is accepted as a
+                no-op for backwards compatibility.
 
-For local mode also install:
+Install:
   pip install faster-whisper
 
 Env: VOICE_TRAY_SAVE_WAV=1 keeps every recording in ~/.voice_to_text/recordings/
@@ -42,10 +45,17 @@ def suppress_stderr():
         os.dup2(old_stderr, 2)
         os.close(old_stderr)
 
+# ---------------------------------------------------------------------------
+# Kill-switch for the cloud (Groq) transcription path.
+# The code for it is intentionally kept, but every entry point (CLI flag,
+# constructor, transcription call) refuses to use it while this is False, so
+# audio can never leave the machine by accident. Flip to True to re-enable.
+CLOUD_MODE_ENABLED = False
+# ---------------------------------------------------------------------------
+
 import pyaudio
 import wave
 import tempfile
-from groq import Groq
 import subprocess
 from threading import Thread, Event
 import signal
@@ -172,13 +182,17 @@ class VoiceToTextApp:
         "SIGUSR1, transcription, audio recording"
     )
 
-    def __init__(self, local=False):
+    def __init__(self, local=True):
         self.local_mode = local
+
+        if not self.local_mode and not CLOUD_MODE_ENABLED:
+            print("ERROR: cloud (Groq) mode is disabled by CLOUD_MODE_ENABLED in voice_tray.py")
+            sys.exit(1)
 
         # Check API key (only required for cloud/Groq mode)
         self.api_key = os.environ.get('GROQ_API_KEY')
         if not self.local_mode and not self.api_key:
-            print("ERROR: GROQ_API_KEY not set (or run with --local for offline mode)")
+            print("ERROR: GROQ_API_KEY not set")
             sys.exit(1)
 
         # Setup transcription log file
@@ -203,6 +217,7 @@ class VoiceToTextApp:
             self.client = None
         else:
             print("[DEBUG] CLOUD mode: using Groq Whisper API")
+            from groq import Groq  # imported lazily: not needed in local-only use
             self.client = Groq(api_key=self.api_key)
             self.asr = None
 
@@ -431,6 +446,8 @@ class VoiceToTextApp:
     
     def _transcribe_groq(self, audio_file, custom_prompt):
         """Transcribe via Groq cloud Whisper API (audio leaves the machine)"""
+        if not CLOUD_MODE_ENABLED:
+            raise RuntimeError("cloud (Groq) transcription is disabled by CLOUD_MODE_ENABLED")
         with open(audio_file, "rb") as f:
             api_params = {
                 "file": (audio_file, f.read()),
@@ -530,12 +547,21 @@ if __name__ == '__main__':
     parser.add_argument(
         "--local",
         action="store_true",
-        help="Run Whisper locally (offline) instead of sending audio to Groq cloud",
+        help="Run Whisper locally, fully offline (the default; kept for compatibility)",
+    )
+    parser.add_argument(
+        "--cloud",
+        action="store_true",
+        help="Send audio to the Groq cloud API (disabled unless CLOUD_MODE_ENABLED is True)",
     )
     cli_args = parser.parse_args()
+
+    if cli_args.cloud and not CLOUD_MODE_ENABLED:
+        parser.error("cloud (Groq) mode is disabled — set CLOUD_MODE_ENABLED = True "
+                     "in voice_tray.py to re-enable it. Run without flags for local mode.")
 
     if not check_dependencies():
         sys.exit(1)
 
-    app = VoiceToTextApp(local=cli_args.local)
+    app = VoiceToTextApp(local=not cli_args.cloud)
     app.run()

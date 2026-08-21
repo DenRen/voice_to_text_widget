@@ -65,12 +65,15 @@ echo 'export GROQ_API_KEY="your-api-key-here"' >> ~/.bashrc
 ### 1. Run the Application
 
 ```bash
-# Cloud mode (Groq API) — default, needs GROQ_API_KEY
-python3 voice_tray.py
-
-# Local mode — fully offline, nothing leaves the machine
-python3 voice_tray.py --local
+# Local mode — fully offline, nothing leaves the machine (the only enabled mode)
+python3 voice_tray.py          # --local is accepted too, as a no-op
 ```
+
+> **Cloud (Groq) mode is disabled.** The code path is kept in `voice_tray.py`
+> but locked behind the `CLOUD_MODE_ENABLED = False` kill-switch: `--cloud`
+> exits with an error, the constructor refuses `local=False`, and
+> `_transcribe_groq()` raises. Flip the constant to `True` to re-enable it
+> (then `GROQ_API_KEY` is required again).
 
 You'll see:
 ```
@@ -99,14 +102,14 @@ To toggle recording, send: kill -SIGUSR1 12345
 - Text is copied to clipboard
 - Paste with `Ctrl+V` anywhere
 
-## Offline / Local Mode (`--local`)
+## Offline / Local Mode (default)
 
-Pass `--local` to run **the same Whisper model Groq serves** (`large-v3-turbo`)
+The app runs **the same Whisper model Groq serves** (`large-v3-turbo`)
 directly on your CPU via [faster-whisper](https://github.com/SYSTRAN/faster-whisper).
 Audio never leaves the machine — ideal for sensitive content. No `GROQ_API_KEY` needed.
 
 ```bash
-python3 voice_tray.py --local
+python3 voice_tray.py
 ```
 
 - **First run** downloads the model (~1.5 GB) into the Hugging Face cache
@@ -324,10 +327,10 @@ class VoiceToTextApp:
 Add to your `~/.bashrc` for easy launching from anywhere:
 
 ```bash
-# Voice-to-Text widget alias
-voice-tray() {
+# Voice-to-Text widget: local-only launcher (nothing leaves the machine)
+voice-tray-local() {
     local VENV_DIR="$HOME/projects/voice_to_text_widget"
-    "$VENV_DIR/venv/bin/python3" "$VENV_DIR/voice_tray.py"
+    "$VENV_DIR/venv/bin/python3" "$VENV_DIR/voice_tray.py" --local "$@"
 }
 ```
 
@@ -335,7 +338,7 @@ Then reload and use:
 
 ```bash
 source ~/.bashrc
-voice-tray  # Launch from anywhere without activating venv
+voice-tray-local  # Launch from anywhere without activating venv
 ```
 
 **Prerequisites**: Run `./setup_venv.sh` first to create the virtual environment.
