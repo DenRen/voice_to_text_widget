@@ -153,7 +153,8 @@ Technical terms: MyCustomClass, API endpoint, React hooks, TypeScript, async/awa
 
 **Methods:**
 - `_find_microphone()`: Auto-detect working microphone
-- `record(stop_event, level_callback)`: Record until event, call callback with levels
+- `record(stop_event, level_callback, chunk_callback)`: Record until event, call
+  callbacks with levels / raw PCM chunks (the local transcriber consumes chunks live)
 - `cleanup()`: Terminate PyAudio
 
 ### Class: VoiceToTextApp
@@ -173,6 +174,30 @@ Technical terms: MyCustomClass, API endpoint, React hooks, TypeScript, async/awa
 - `_load_prompt()`: Read custom prompt file
 - `_save_to_log(text)`: Append to transcription log
 - `_copy_to_clipboard(text)`: Copy via xclip
+
+### Module: local_asr.py (local `--local` mode core)
+**Purpose**: Offline transcription with faster-whisper `large-v3-turbo` (int8 CPU),
+pipelined with the recording so the wait after "stop" is ~one Whisper window
+(~5 s on a laptop CPU) regardless of dictation length.
+
+- `LocalASR`: loads the model (cache first, download once), warms it up in a
+  background thread, defaults `cpu_threads` to the physical core count
+  (CTranslate2's default 4 threads is ~2× slower on hybrid Intel CPUs), and
+  serialises all model access behind a lock.
+- `Session`: `feed(pcm_bytes)` is called from the recorder thread; every 0.5 s
+  it probes the last 1.5 s with Silero VAD and, once ≥ `MIN_WINDOW_S` (12 s) is
+  pending and the speaker paused ≥ `PAUSE_S` (0.6 s), marks a cut. A worker
+  thread transcribes `[committed:cut]` (≤ `MAX_WINDOW_S` = 28 s, longer pending
+  audio is split at silences) with the same `transcribe()` call the old
+  whole-file path used (beam 5, VAD filter, prompt) plus the previous window's
+  last 40 words as context. `finish()` transcribes the tail and joins texts.
+  Windows without speech are skipped (no encoder pass, no hallucinations).
+- Measured (i7-1355U, no GPU): the encoder pass on a padded 30 s window costs
+  ~4–6 s and dominates; decode is <1 s; encoding shorter, unpadded windows breaks
+  Whisper on Russian (tested: WER 0.8–1.8), so windows stay 30 s-padded.
+- `python local_asr.py file.wav --batch` replays a recording in real time and
+  compares with the old whole-file mode. `VOICE_TRAY_SAVE_WAV=1` makes the app
+  keep recordings in `~/.voice_to_text/recordings/` for that purpose.
 
 ## API Configuration
 
@@ -243,7 +268,7 @@ export GROQ_API_KEY="your-api-key-here"
 2. **Chunking**: Support for recordings > 30 seconds
 3. **Multiple languages**: Language selector in tray menu
 4. **Voice profiles**: Different prompts for different contexts
-5. **Local Whisper**: Offline mode with local model (larger, slower)
+5. ~~**Local Whisper**: Offline mode with local model~~ — done (`--local`, `local_asr.py`)
 6. **Wayland support**: Use wl-clipboard instead of xclip
 
 ## Development Notes

@@ -113,8 +113,22 @@ python3 voice_tray.py --local
   (`~/.cache/huggingface`). After that it works **fully offline**.
 - The tray title shows the active mode: `🎤 Voice to Text (Local)` vs `(Groq)`.
 - Your `~/.voice_to_text/prompt.txt` is reused as Whisper's `initial_prompt`.
-- **Trade-off:** local CPU transcription takes a few seconds per phrase
-  (vs Groq's near-instant cloud inference). Quality is the same model.
+- **Transcribes while you speak** (`local_asr.py`): the recording is cut into
+  ≤30 s windows at pauses (Silero VAD) and each finished window is transcribed
+  in the background while you keep talking. When you press stop, only the last
+  window is left, so the wait is roughly **~5 s on a laptop CPU regardless of
+  how long you dictated** (it used to grow linearly: ~30 s for a one-minute
+  dictation). Each window goes through the exact same Whisper path as before
+  (30 s padded window, beam 5, VAD filter, your prompt), so quality is unchanged;
+  the previous window's text is passed along as context.
+- Uses all physical CPU cores (CTranslate2's default of 4 threads is ~2× slower
+  on hybrid Intel CPUs) and warms the model up at start-up.
+  Override with `VOICE_TRAY_CPU_THREADS=N`.
+- `VOICE_TRAY_SAVE_WAV=1` keeps a copy of every recording in
+  `~/.voice_to_text/recordings/` — useful for benchmarking:
+  `python3 local_asr.py ~/.voice_to_text/recordings/<file>.wav --batch`
+  replays it in real time and prints per-window timings, the wait after
+  stop, and the old whole-file result for comparison.
 - To change the local model, edit `LOCAL_MODEL` in `voice_tray.py`
   (e.g. `"medium"` / `"small"` for faster, lower-accuracy transcription).
 
@@ -332,12 +346,14 @@ voice-tray  # Launch from anywhere without activating venv
 
 ```
 .
-├── voice_tray.py              # Main application (~450 lines)
+├── voice_tray.py              # Main application: tray, hotkey, recording, clipboard
+├── local_asr.py               # Local mode core: pipelined faster-whisper transcription
 ├── CONTEXT_FOR_CLAUDE_CODE.md # Developer documentation
 ├── README.md                  # This file
 └── ~/.voice_to_text/          # Runtime directory (auto-created)
     ├── transcriptions.log     # All transcription history
-    └── prompt.txt             # Custom technical terms
+    ├── prompt.txt             # Custom technical terms
+    └── recordings/            # Only with VOICE_TRAY_SAVE_WAV=1
 ```
 
 ## Contributing

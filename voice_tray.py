@@ -9,9 +9,14 @@ pip install groq pyaudio PyGObject-stubs
 Transcription modes:
   (default)  -> Groq cloud API           (needs GROQ_API_KEY, audio leaves the machine)
   --local    -> local faster-whisper     (fully offline, nothing leaves the machine)
+                (see local_asr.py: transcribes while you speak, so the wait after
+                "stop" stays short regardless of how long you dictated)
 
 For local mode also install:
   pip install faster-whisper
+
+Env: VOICE_TRAY_SAVE_WAV=1 keeps every recording in ~/.voice_to_text/recordings/
+     (handy for building a benchmark set); VOICE_TRAY_CPU_THREADS=N overrides threads.
 
 Send SIGUSR1 signal to toggle recording (bind to any hotkey in system settings)
 """
@@ -85,8 +90,12 @@ class AudioRecorder:
                     continue
         return None
     
-    def record(self, stop_event, level_callback=None):
-        """Record audio until stop_event is set"""
+    def record(self, stop_event, level_callback=None, chunk_callback=None):
+        """Record audio until stop_event is set.
+
+        chunk_callback(bytes) is called for every captured chunk (int16 PCM) — the
+        local transcriber uses it to transcribe while the recording is still going.
+        Returns the path of a temporary WAV file with the whole recording."""
         if self.device_index is None:
             return None
         
@@ -106,6 +115,8 @@ class AudioRecorder:
             try:
                 data = stream.read(self.CHUNK, exception_on_overflow=False)
                 frames.append(data)
+                if chunk_callback:
+                    chunk_callback(data)
                 
                 # Calculate audio level for visual feedback
                 if level_callback:
@@ -185,29 +196,15 @@ class VoiceToTextApp:
         print(f"[DEBUG] Prompt file: {self.prompt_file}")
 
         if self.local_mode:
-            print(f"[DEBUG] LOCAL mode: loading faster-whisper ({self.LOCAL_MODEL}, int8 CPU)...")
-            from faster_whisper import WhisperModel
-            try:
-                # local_files_only=True => use the cached model and make ZERO network
-                # calls to Hugging Face. Truly nothing leaves the machine.
-                self.whisper_model = WhisperModel(
-                    self.LOCAL_MODEL, device="cpu", compute_type="int8",
-                    local_files_only=True,
-                )
-                print("[DEBUG] Local model loaded from cache (fully offline — no network at all)")
-            except Exception:
-                # Not cached yet -> download once (~1.5 GB), then it stays offline forever.
-                print("[DEBUG] Model not cached; downloading once (~1.5 GB) from Hugging Face...")
-                self.whisper_model = WhisperModel(
-                    self.LOCAL_MODEL, device="cpu", compute_type="int8",
-                    local_files_only=False,
-                )
-                print("[DEBUG] Local model downloaded and ready")
+            print(f"[DEBUG] LOCAL mode: faster-whisper {self.LOCAL_MODEL} (int8 CPU), pipelined")
+            from local_asr import LocalASR
+            # Loads the model (downloads it once, then fully offline) and warms it up.
+            self.asr = LocalASR(model_name=self.LOCAL_MODEL, log=print)
             self.client = None
         else:
             print("[DEBUG] CLOUD mode: using Groq Whisper API")
             self.client = Groq(api_key=self.api_key)
-            self.whisper_model = None
+            self.asr = None
 
         print("[DEBUG] Creating AudioRecorder...")
         self.recorder = AudioRecorder()
@@ -371,22 +368,35 @@ class VoiceToTextApp:
     
     def _record_and_transcribe(self):
         """Record audio and transcribe (runs in background thread)"""
+        # Load custom prompt for technical terms
+        custom_prompt = self._load_prompt()
+
+        # Local mode transcribes WHILE recording: every captured chunk is fed to a
+        # session whose worker thread transcribes completed windows in the background.
+        session = self.asr.start_session(custom_prompt, language="ru") if self.local_mode else None
+
         # Record
-        audio_file = self.recorder.record(self.stop_recording, self.update_level_indicator)
+        audio_file = self.recorder.record(
+            self.stop_recording, self.update_level_indicator,
+            chunk_callback=session.feed if session else None,
+        )
 
         if not audio_file:
+            if session:
+                session.finish()
             self.update_status("Ready")
             return
+
+        if os.environ.get("VOICE_TRAY_SAVE_WAV"):
+            self._save_recording(audio_file)
 
         # Transcribe
         self.update_status("Processing...")
 
         try:
-            # Load custom prompt for technical terms
-            custom_prompt = self._load_prompt()
-
             if self.local_mode:
-                text = self._transcribe_local(audio_file, custom_prompt)
+                # Only the tail of the recording is left to transcribe at this point.
+                text = session.finish()
             else:
                 text = self._transcribe_groq(audio_file, custom_prompt)
 
@@ -436,18 +446,18 @@ class VoiceToTextApp:
             transcription = self.client.audio.transcriptions.create(**api_params)
         return transcription.strip()
 
-    def _transcribe_local(self, audio_file, custom_prompt):
-        """Transcribe locally with faster-whisper (fully offline, nothing leaves the machine)"""
-        segments, _info = self.whisper_model.transcribe(
-            audio_file,
-            language="ru",
-            initial_prompt=custom_prompt or None,
-            temperature=0.0,
-            beam_size=5,
-            vad_filter=True,
-        )
-        # segments is a generator; consuming it runs the actual transcription
-        return "".join(segment.text for segment in segments).strip()
+    def _save_recording(self, audio_file):
+        """Keep a copy of the recording (VOICE_TRAY_SAVE_WAV=1) for benchmarking"""
+        try:
+            import shutil
+            from datetime import datetime
+            rec_dir = os.path.join(self.log_dir, "recordings")
+            os.makedirs(rec_dir, exist_ok=True)
+            dest = os.path.join(rec_dir, datetime.now().strftime("%Y%m%d-%H%M%S") + ".wav")
+            shutil.copy(audio_file, dest)
+            print(f"[DEBUG] Recording saved: {dest}")
+        except Exception as e:
+            print(f"[DEBUG] Could not save recording: {e}")
 
     def _copy_to_clipboard(self, text):
         """Copy text to clipboard"""
