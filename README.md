@@ -239,6 +239,26 @@ Format:
 | Python | 3.8+ |
 | Internet | Required for Groq API |
 
+## macOS (Apple Silicon)
+
+The app itself is Linux-only, but the same workflow on a Mac is covered by
+[Handy](https://handy.computer) (open source, whisper.cpp, same large-v3-turbo
+model) configured to behave identically: toggle hotkey, Russian + English
+technical terms, clipboard-only output at the end of the recording, fully
+offline.
+
+```bash
+# On the Mac (Apple Silicon):
+bash setup_handy_macos.sh
+```
+
+The script pins SHA-256 for both the app and the model, verifies the code
+signature, and writes the whole settings file (hotkey ⌘⇧Space, Whisper Turbo,
+Russian, custom vocabulary, no auto-paste). Two manual steps remain (macOS
+restrictions): granting Accessibility and Microphone permissions — the script
+prints instructions. See `docs/macos_setup_prompt.md` for the research /
+requirements behind this choice.
+
 ## Troubleshooting
 
 ### Tray Icon Not Visible
