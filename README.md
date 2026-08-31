@@ -247,9 +247,10 @@ model) configured to behave identically: toggle hotkey, Russian + English
 technical terms, clipboard-only output at the end of the recording, fully
 offline.
 
+One-liner install on the Mac (Apple Silicon):
+
 ```bash
-# On the Mac (Apple Silicon):
-bash setup_handy_macos.sh
+curl -fsSL https://raw.githubusercontent.com/DenRen/voice_to_text_widget/main/setup_handy_macos.sh | bash
 ```
 
 The script pins SHA-256 for both the app and the model, verifies the code
